@@ -9,7 +9,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Comelit Local",
+        "title": "Comelit Intercom Local",
         "description": "Connect to your Comelit 6701W intercom locally.",
         "data": {
           "host": "Host",
