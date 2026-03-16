@@ -1,0 +1,109 @@
+"""Button entities for door opening."""
+
+from __future__ import annotations
+
+import logging
+
+from homeassistant.components.button import ButtonEntity
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .coordinator import ComelitLocalConfigEntry, ComelitLocalCoordinator
+from .models import Door, PushEvent
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ComelitLocalConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up door open and video button entities."""
+    coordinator = entry.runtime_data
+    config = coordinator.device_config
+    if not config:
+        return
+
+    entities: list[ButtonEntity] = [
+        ComelitDoorButton(coordinator, door, entry.entry_id)
+        for door in config.doors
+    ]
+
+    if config.doors:
+        entities.append(ComelitStartVideoButton(coordinator, entry.entry_id))
+        entities.append(ComelitStopVideoButton(coordinator, entry.entry_id))
+
+    async_add_entities(entities)
+
+
+class ComelitDoorButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity):
+    """Button entity to open a Comelit door."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:door-open"
+
+    def __init__(
+        self,
+        coordinator: ComelitLocalCoordinator,
+        door: Door,
+        entry_id: str,
+    ) -> None:
+        """Initialize the door button entity."""
+        super().__init__(coordinator)
+        self._door = door
+        self._attr_unique_id = f"{entry_id}_door_{door.index}"
+        # Door names are device-provided strings, not static labels.
+        self._attr_name = door.name
+
+    async def async_press(self) -> None:
+        """Open the door when pressed."""
+        _LOGGER.info("Opening door: %s", self._door.name)
+        await self.coordinator.async_open_door(self._door)
+
+
+class ComelitStartVideoButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity):
+    """Button entity to start intercom video feed."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:video"
+    _attr_name = "Start Video Feed"
+
+    def __init__(
+        self,
+        coordinator: ComelitLocalCoordinator,
+        entry_id: str,
+    ) -> None:
+        """Initialize the start video button entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_video_start"
+
+    async def async_press(self) -> None:
+        """Start intercom video when pressed."""
+        if not self.coordinator.device_config:
+            return
+        _LOGGER.info("Starting intercom video")
+        await self.coordinator.async_start_video()
+
+
+class ComelitStopVideoButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity):
+    """Button entity to stop intercom video feed."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:video-off"
+    _attr_name = "Stop Video Feed"
+
+    def __init__(
+        self,
+        coordinator: ComelitLocalCoordinator,
+        entry_id: str,
+    ) -> None:
+        """Initialize the stop video button entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_video_stop"
+
+    async def async_press(self) -> None:
+        """Stop intercom video when pressed."""
+        _LOGGER.info("Stopping intercom video")
+        await self.coordinator.async_stop_video()
