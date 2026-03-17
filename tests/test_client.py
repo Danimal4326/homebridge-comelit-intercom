@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.comelit_intercom_local.client import IconaBridgeClient
+from custom_components.comelit_intercom_local.exceptions import ConnectionComelitError
 from custom_components.comelit_intercom_local.protocol import (
     HEADER_SIZE,
     MessageType,
@@ -122,7 +123,7 @@ async def test_send_json_and_receive():
             client.open_channel("UAUT", ChannelType.UAUT), timeout=3.0
         )
 
-        # Now feed a JSON response for the data exchange
+        # Device responds with server_channel_id (100) as the request_id
         response_payload = {"message": "access", "response-code": 200, "response-string": "OK"}
         reader.feed(_make_json_response(100, response_payload))
 
@@ -138,6 +139,71 @@ async def test_send_json_and_receive():
             await client._receive_task
         except asyncio.CancelledError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_concurrent_send_json_on_same_channel():
+    """Concurrent send_json calls on the same channel are serialized by the lock.
+
+    The lock ensures only one send is in-flight at a time. We verify this by
+    holding the lock manually and checking that a concurrent send_json blocks
+    until the lock is released.
+    """
+    reader = FakeStreamReader()
+    writer = FakeStreamWriter()
+
+    client = IconaBridgeClient("127.0.0.1")
+    client._reader = reader
+    client._writer = writer
+    client._connected = True
+    client._receive_task = asyncio.create_task(client._receive_loop())
+
+    reader.feed(_make_command_response(server_channel_id=100))
+
+    try:
+        channel = await asyncio.wait_for(
+            client.open_channel("UAUT", ChannelType.UAUT), timeout=3.0
+        )
+
+        # Hold the lock manually — send_json must block
+        await channel.send_lock.acquire()
+        blocked_task = asyncio.create_task(
+            client.send_json(channel, {"req": "blocked"})
+        )
+        await asyncio.sleep(0.05)
+        assert not blocked_task.done(), "send_json should block while lock is held"
+
+        # Release lock — feed response so send_json can complete
+        channel.send_lock.release()
+        reader.feed(_make_json_response(100, {"response-code": 200}))
+        result = await asyncio.wait_for(blocked_task, timeout=3.0)
+        assert result["response-code"] == 200
+    finally:
+        client._connected = False
+        client._receive_task.cancel()
+        try:
+            await client._receive_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_send_raises_connection_error_on_drain_failure():
+    """_send must raise ConnectionComelitError when drain raises OSError."""
+    reader = FakeStreamReader()
+
+    class FailingWriter(FakeStreamWriter):
+        async def drain(self):
+            raise OSError("broken pipe")
+
+    writer = FailingWriter()
+    client = IconaBridgeClient("127.0.0.1")
+    client._reader = reader
+    client._writer = writer
+    client._connected = True
+
+    with pytest.raises(ConnectionComelitError, match="Send failed"):
+        await client._send(b"\x00\x06\x00\x00\x00\x00\x00\x00")
 
 
 @pytest.mark.asyncio

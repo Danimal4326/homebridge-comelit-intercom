@@ -96,7 +96,10 @@ class IconaBridgeClient:
             raise ConnectionComelitError("Not connected")
         _LOGGER.debug(f"Writing {len(data)} bytes: {data.hex(' ')}")
         self._writer.write(data)
-        await self._writer.drain()
+        try:
+            await self._writer.drain()
+        except (OSError, ConnectionError) as e:
+            raise ConnectionComelitError(f"Send failed: {e}") from e
 
     async def _read_packet(self) -> tuple[int, bytes]:
         """Read one full packet. Returns (request_id, body)."""
@@ -126,7 +129,7 @@ class IconaBridgeClient:
                 request_id, body = await self._read_packet()
                 self._dispatch(request_id, body)
         except asyncio.IncompleteReadError:
-            _LOGGER.debug("Connection closed by device")
+            _LOGGER.info("Connection closed by device")
             self._connected = False
         except asyncio.CancelledError:
             raise
@@ -297,31 +300,37 @@ class IconaBridgeClient:
         del self._channels[name]
 
     async def send_json(self, channel: Channel, msg: dict) -> dict:
-        """Send a JSON message on a channel and wait for JSON response."""
+        """Send a JSON message on a channel and wait for JSON response.
+
+        Uses a per-channel lock so concurrent callers are serialized — the
+        device always responds with server_channel_id, which can only map to
+        one pending callback at a time.
+        """
         if not channel.is_open or channel.server_channel_id == 0:
             raise ProtocolError(f"Channel {channel.name} not open")
 
-        _LOGGER.debug(
-            "send_json on %s (server_channel_id=%d): %s",
-            channel.name, channel.server_channel_id, msg,
-        )
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[bytes] = loop.create_future()
-        self._callbacks[channel.server_channel_id] = future
-
-        packet = encode_json_message(msg, channel.server_channel_id)
-        await self._send(packet)
-
-        try:
-            body = await asyncio.wait_for(future, timeout=READ_TIMEOUT)
-        except TimeoutError:
-            _LOGGER.error(
-                "Timeout on %s (server_channel_id=%d), pending_callbacks=%s",
-                channel.name, channel.server_channel_id, list(self._callbacks.keys()),
+        async with channel.send_lock:
+            _LOGGER.debug(
+                "send_json on %s (server_channel_id=%d): %s",
+                channel.name, channel.server_channel_id, msg,
             )
-            self._callbacks.pop(channel.server_channel_id, None)
-            raise ProtocolError(f"Timeout waiting for response on {channel.name}")
+
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[bytes] = loop.create_future()
+            self._callbacks[channel.server_channel_id] = future
+
+            packet = encode_json_message(msg, channel.server_channel_id)
+            await self._send(packet)
+
+            try:
+                body = await asyncio.wait_for(future, timeout=READ_TIMEOUT)
+            except TimeoutError:
+                _LOGGER.error(
+                    "Timeout on %s (server_channel_id=%d), pending_callbacks=%s",
+                    channel.name, channel.server_channel_id, list(self._callbacks.keys()),
+                )
+                self._callbacks.pop(channel.server_channel_id, None)
+                raise ProtocolError(f"Timeout waiting for response on {channel.name}")
 
         if is_json_body(body):
             return decode_json_body(body)
