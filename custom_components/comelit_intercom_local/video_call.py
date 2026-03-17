@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import struct
 import time
@@ -26,6 +27,14 @@ _LOGGER = logging.getLogger(__name__)
 
 VIDEO_RESPONSE_TIMEOUT = 5.0  # device can be slow to respond to CTPP signaling
 VIDEO_SESSION_TIMEOUT = 120.0
+
+# CTPP message counter increment constants (from PCAP analysis)
+# Bytes [4-5] in CTPP body encode two independent sub-counters:
+#   byte[4] increments by 1 → adds 0x00010000 to the LE32 timestamp field
+#   byte[5] increments by 1 → adds 0x01000000 to the LE32 timestamp field
+_CTR_INCR_BYTE4 = 0x00010000   # only byte[4] increments
+_CTR_INCR_BYTE5 = 0x01000000   # only byte[5] increments
+_CTR_INCR_BOTH  = 0x01010000   # both byte[4] and byte[5] increment
 
 
 class VideoCallSession:
@@ -144,7 +153,7 @@ class VideoCallSession:
             # 0x1860 continuously, blocking the codec exchange.
             # PCAP-verified: init-phase ACKs use (our_addr, apt_addr) —
             # first=full apt address, second=apt WITHOUT subaddress.
-            ack_ts = init_ts + 0x01010000
+            ack_ts = init_ts + _CTR_INCR_BOTH
             ack = encode_call_response_ack(our_addr, apt_addr, ack_ts)
             await client.send_binary(ctpp, ack)
             ack2 = encode_call_response_ack(
@@ -217,7 +226,7 @@ class VideoCallSession:
             # Send codec msg with our own incremented counter.
             # PCAP-verified: only +0x00010000 between call_init and codec
             # (byte[4] increments by 1, byte[5] stays).
-            call_counter += 0x00010000
+            call_counter += _CTR_INCR_BYTE4
             codec_ack = encode_call_ack(our_addr, entrance_addr, call_counter)
             await client.send_binary(ctpp, codec_ack)
 
@@ -252,7 +261,7 @@ class VideoCallSession:
                     if action == 0x0008:
                         # Device sent its codec — ACK with bare 0x1800.
                         # PCAP: +0x01010000 (both byte[4] and byte[5] increment by 1).
-                        call_counter += 0x01010000
+                        call_counter += _CTR_INCR_BOTH
                         ack = encode_call_response_ack(
                             our_addr, entrance_addr, call_counter
                         )
@@ -264,7 +273,7 @@ class VideoCallSession:
                     elif action == 0x0002:
                         # "Call accepted" — ACK and exit codec exchange.
                         # PCAP: +0x01000000 (only byte[5] increments by 1).
-                        call_counter += 0x01000000
+                        call_counter += _CTR_INCR_BYTE5
                         ack = encode_call_response_ack(
                             our_addr, entrance_addr, call_counter
                         )
@@ -273,7 +282,7 @@ class VideoCallSession:
                         break
                     else:
                         # Other 0x1840 — bare ACK
-                        call_counter += 0x00010000
+                        call_counter += _CTR_INCR_BYTE4
                         ack = encode_call_response_ack(
                             our_addr, entrance_addr, call_counter
                         )
@@ -325,7 +334,8 @@ class VideoCallSession:
                     "Device opened RTPC: 0x%04X", device_rtpc.server_channel_id
                 )
             except TimeoutError:
-                _LOGGER.debug("Device RTPC not received (may arrive later)")
+                _LOGGER.warning("Device RTPC channel not received within timeout")
+                raise VideoCallError("Device RTPC channel not received")
 
             # Read and ACK device's CTPP RTPC link (0x1840/0x000A)
             for _ in range(5):
@@ -346,7 +356,7 @@ class VideoCallSession:
                 )
                 if msg_type == 0x1840 and action == 0x000A:
                     # Device's RTPC link — ACK with +0x01000000
-                    call_counter += 0x01000000
+                    call_counter += _CTR_INCR_BYTE5
                     ack = encode_call_response_ack(
                         our_addr, entrance_addr, call_counter
                     )
@@ -360,7 +370,7 @@ class VideoCallSession:
 
             # Step 9b: Video config trigger (uses our RTPC2 req_id)
             # PCAP: +0x00010000 from ACK of device's RTPC link
-            call_counter += 0x00010000
+            call_counter += _CTR_INCR_BYTE4
             vid_config = encode_video_config(
                 our_addr, entrance_addr, media_req_id, call_counter
             )
@@ -414,18 +424,28 @@ class VideoCallSession:
     async def _cleanup(self) -> None:
         """Clean up all resources."""
         self._active = False
-        if self._timeout_task:
-            self._timeout_task.cancel()
-            self._timeout_task = None
-        if self._tcp_task:
-            self._tcp_task.cancel()
-            self._tcp_task = None
-        if self._rtp_receiver:
-            await self._rtp_receiver.stop()
-            self._rtp_receiver = None
-        if self._client:
-            await self._client.disconnect()
-            self._client = None
+
+        timeout_task, self._timeout_task = self._timeout_task, None
+        if timeout_task:
+            timeout_task.cancel()
+            with contextlib.suppress(BaseException):
+                await timeout_task
+
+        tcp_task, self._tcp_task = self._tcp_task, None
+        if tcp_task:
+            tcp_task.cancel()
+            with contextlib.suppress(BaseException):
+                await tcp_task
+
+        receiver, self._rtp_receiver = self._rtp_receiver, None
+        if receiver:
+            with contextlib.suppress(Exception):
+                await receiver.stop()
+
+        client, self._client = self._client, None
+        if client:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
 
     @staticmethod
     async def _tcp_video_loop(
@@ -440,7 +460,7 @@ class VideoCallSession:
         body is raw RTP starting with 0x80 (RTP version 2).
         """
         try:
-            while receiver._running:
+            while receiver.running:
                 data = await client.read_response(rtpc2, timeout=2.0)
                 if data and len(data) >= 12:
                     receiver.receive_tcp_rtp(data)

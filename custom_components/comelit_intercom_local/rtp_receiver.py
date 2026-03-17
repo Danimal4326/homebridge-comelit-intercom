@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import struct
@@ -365,10 +366,14 @@ class RtpReceiver:
 
         if self._keepalive_task:
             self._keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._keepalive_task
             self._keepalive_task = None
 
         if self._decode_task:
             self._decode_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._decode_task
             self._decode_task = None
 
         if self._transport:
@@ -392,6 +397,11 @@ class RtpReceiver:
         except TimeoutError:
             return None
         return self._latest_frame
+
+    @property
+    def running(self) -> bool:
+        """Return True if the receiver is active."""
+        return self._running
 
     @property
     def latest_frame(self) -> bytes | None:

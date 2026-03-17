@@ -11,6 +11,7 @@ from custom_components.comelit_intercom_local.exceptions import ConnectionComeli
 from custom_components.comelit_intercom_local.protocol import (
     HEADER_SIZE,
     MessageType,
+    decode_header,
     encode_header,
 )
 from custom_components.comelit_intercom_local.channels import ChannelType
@@ -105,7 +106,11 @@ async def test_open_channel():
 
 @pytest.mark.asyncio
 async def test_send_json_and_receive():
-    """Test sending JSON on a channel and receiving a JSON response."""
+    """Test sending JSON on a channel and receiving a JSON response.
+
+    send_json uses a unique per-message request_id (not server_channel_id), so
+    we must extract that ID from the written packet and echo it back.
+    """
     reader = FakeStreamReader()
     writer = FakeStreamWriter()
 
@@ -127,10 +132,24 @@ async def test_send_json_and_receive():
         response_payload = {"message": "access", "response-code": 200, "response-string": "OK"}
         reader.feed(_make_json_response(100, response_payload))
 
-        result = await asyncio.wait_for(
-            client.send_json(channel, {"message": "access", "user-token": "test"}),
-            timeout=3.0,
+        # Start send_json as a background task
+        send_task = asyncio.create_task(
+            client.send_json(channel, {"message": "access", "user-token": "test"})
         )
+
+        # Wait for the packet to be written, then extract the msg_request_id
+        for _ in range(50):
+            if len(writer.data) >= HEADER_SIZE:
+                break
+            await asyncio.sleep(0.01)
+
+        _, msg_request_id = decode_header(bytes(writer.data[:HEADER_SIZE]))
+
+        # Feed a JSON response keyed by the actual msg_request_id
+        response_payload = {"message": "access", "response-code": 200, "response-string": "OK"}
+        reader.feed(_make_json_response(msg_request_id, response_payload))
+
+        result = await asyncio.wait_for(send_task, timeout=3.0)
         assert result["response-code"] == 200
     finally:
         client._connected = False
