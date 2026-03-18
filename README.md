@@ -5,8 +5,9 @@ Home Assistant custom component for the **Comelit 6701W** WiFi video intercom. C
 ## Features
 
 - **Remote door opening** — open doors/gates from Home Assistant
-- **Camera streaming** — RTSP video feed in HA dashboards
-- **100% local** — all communication stays on your LAN
+- **Live intercom video** — view the door camera stream directly in HA dashboards
+- **Doorbell events** — automations trigger on ring or missed call
+- **100% local** — all communication stays on your LAN, no cloud required
 
 ## Requirements
 
@@ -40,7 +41,8 @@ Home Assistant custom component for the **Comelit 6701W** WiFi video intercom. C
 | Entity Type | Description |
 |-------------|-------------|
 | **Button** | One per door — press to open |
-| **Camera** | RTSP stream from each configured camera |
+| **Camera (Intercom Video)** | Live video stream from the door panel. Auto-starts when you open the camera in the dashboard; stops when you close it. Also auto-starts on doorbell ring and stops automatically after 120 seconds. |
+| **Camera (RTSP)** | RTSP stream from each additional configured camera |
 | **Event** | Fires `doorbell_ring` and `missed_call` events for automations |
 
 ### Automation Example
@@ -75,8 +77,7 @@ Key operations:
 
 ## Future developments
 
-- **Doorbell notifications** — real-time push events when someone rings
-- **Voice implementation** - get sound from video door phone
+- **Audio** — receive sound from the door panel during a video call
 
 ## Acknowledgments
 
