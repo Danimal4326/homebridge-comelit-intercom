@@ -116,10 +116,13 @@ def test_initial_viewer_count_is_zero(camera):
 
 @pytest.mark.asyncio
 async def test_mjpeg_stream_sends_placeholder_and_starts_video(camera):
-    """handle_async_mjpeg_stream sends placeholder, starts video, stops on close."""
+    """handle_async_mjpeg_stream sends placeholder, starts video, stops on close.
+
+    New loop structure: while viewer_count > 0, one frame per iteration.
+    Exit via ConnectionResetError on write (simulates client disconnect).
+    """
     camera._coordinator.async_stop_video = AsyncMock()
 
-    # Session starts inactive → _video_active=False → starts video
     session = MagicMock()
     session.active = False
     camera._coordinator.video_session = session
@@ -134,26 +137,33 @@ async def test_mjpeg_stream_sends_placeholder_and_starts_video(camera):
 
     camera._coordinator.async_start_video = mock_start_video
 
-    # _video_active sequence:
-    #   call 1: False → `if not _video_active` triggers start, started_by_us=True
-    #   call 2: True  → one frame delivered in the while loop
-    #   call 3+: False → exits while loop
-    video_active_calls = 0
+    # _video_active sequence (one iteration of the new while-viewer_count loop):
+    #   check A (if not _video_active): False → triggers start_video
+    #   check B (if not _video_active after start): True → skip retry
+    # Frame is then written → ConnectionResetError breaks the loop.
+    active_sequence = [False, True]
+    active_idx = 0
 
     def mock_video_active(self):
-        nonlocal video_active_calls
-        video_active_calls += 1
-        return video_active_calls == 2  # False → True → False
+        nonlocal active_idx
+        val = active_sequence[active_idx] if active_idx < len(active_sequence) else True
+        active_idx += 1
+        return val
 
-    # Mock request and capture written data
     request = MagicMock()
     written_data = []
+    write_count = 0
 
     response = MagicMock()
     response.prepare = AsyncMock()
 
     async def capture_write(data):
+        nonlocal write_count
+        write_count += 1
         written_data.append(data)
+        # Raise on the 2nd write (the frame write) to exit the loop
+        if write_count >= 2:
+            raise ConnectionResetError
 
     response.write = capture_write
 
@@ -161,7 +171,7 @@ async def test_mjpeg_stream_sends_placeholder_and_starts_video(camera):
         with patch.object(type(camera), "_video_active", new_callable=lambda: property(mock_video_active)):
             await camera.handle_async_mjpeg_stream(request)
 
-    # Placeholder was sent as first frame
+    # Placeholder was sent as first write (before the loop)
     assert len(written_data) >= 1
     assert PLACEHOLDER_JPEG in written_data[0]
     assert _MJPEG_BOUNDARY.encode() in written_data[0]
@@ -169,7 +179,94 @@ async def test_mjpeg_stream_sends_placeholder_and_starts_video(camera):
     # Live frame was delivered in the loop iteration
     assert any(fake_frame in d for d in written_data[1:])
 
-    # Video was stopped (started_by_us=True, viewer_count back to 0)
+    # Video was stopped when viewer_count reached 0
+    camera._coordinator.async_stop_video.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_video_stops_when_last_viewer_leaves_even_if_not_starter(camera):
+    """Video stops when viewer_count reaches 0; if count stays > 0 it does NOT stop."""
+    camera._coordinator.async_stop_video = AsyncMock()
+    camera._coordinator.async_start_video = AsyncMock()
+
+    # One existing viewer; this handler makes it 2, then drops back to 1 on exit.
+    camera._viewer_count = 1
+
+    session = MagicMock()
+    session.active = True
+    session.rtp_receiver = MagicMock()
+    session.rtp_receiver.get_jpeg_frame = AsyncMock(return_value=None)
+    camera._coordinator.video_session = session
+
+    request = MagicMock()
+    response = MagicMock()
+    response.prepare = AsyncMock()
+
+    write_count = 0
+
+    async def capture_write(data):
+        nonlocal write_count
+        write_count += 1
+        if write_count >= 2:
+            raise ConnectionResetError
+
+    response.write = capture_write
+
+    # Session already active: check A returns True → skip start block.
+    # Frame written → ConnectionResetError on write #2.
+    def mock_video_active(self):
+        return True
+
+    with patch("aiohttp.web.StreamResponse", return_value=response):
+        with patch.object(
+            type(camera), "_video_active", new_callable=lambda: property(mock_video_active)
+        ):
+            await camera.handle_async_mjpeg_stream(request)
+
+    # viewer_count: 1→2 (enter)→1 (exit) — still a viewer remaining, stop NOT called
+    camera._coordinator.async_stop_video.assert_not_called()
+    assert camera._viewer_count == 1
+
+
+@pytest.mark.asyncio
+async def test_video_stops_when_sole_non_starter_leaves(camera):
+    """If the sole viewer disconnects, stop is called regardless of who started the video."""
+    camera._coordinator.async_stop_video = AsyncMock()
+    camera._coordinator.async_start_video = AsyncMock()
+
+    session = MagicMock()
+    session.active = True
+    session.rtp_receiver = MagicMock()
+    session.rtp_receiver.get_jpeg_frame = AsyncMock(return_value=None)
+    camera._coordinator.video_session = session
+    camera._viewer_count = 0  # no other viewers
+
+    request = MagicMock()
+    response = MagicMock()
+    response.prepare = AsyncMock()
+
+    write_count = 0
+
+    async def capture_write(data):
+        nonlocal write_count
+        write_count += 1
+        if write_count >= 2:
+            raise ConnectionResetError
+
+    response.write = capture_write
+
+    # Session already active: check A returns True → skip start block.
+    # Frame written → ConnectionResetError on write #2.
+    def mock_video_active(self):
+        return True
+
+    with patch("aiohttp.web.StreamResponse", return_value=response):
+        with patch.object(
+            type(camera), "_video_active", new_callable=lambda: property(mock_video_active)
+        ):
+            await camera.handle_async_mjpeg_stream(request)
+
+    # viewer_count: 0→1 (enter)→0 (exit) — sole viewer left, stop must be called.
     camera._coordinator.async_stop_video.assert_called_once()
 
 
