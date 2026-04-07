@@ -7,6 +7,8 @@ from enum import IntEnum
 import json
 import struct
 
+from .const import VIDEO_FPS, VIDEO_HEIGHT, VIDEO_WIDTH
+
 HEADER_SIZE = 8  # Fixed header size: magic(2) + length(2) + request_id(2) + padding(2)
 HEADER_MAGIC = b"\x00\x06" # All messages start with these magic bytes
 ICONA_BRIDGE_PORT = 64100 # TCP port for ICONA Bridge protocol
@@ -259,6 +261,9 @@ ACTION_CALL_INIT = 0x0028
 ACTION_CODEC_NEG = 0x0008
 ACTION_RTPC_LINK = 0x000A
 ACTION_VIDEO_CONFIG = 0x001A
+ACTION_PEER = 0x0070       # "accept call" / peer (answer sequence msg 1)
+ACTION_CONFIG_ACK = 0x000E # supplemental config ACK (answer sequence msg 2)
+ACTION_HANGUP = 0x002D     # '-' = hangup
 
 
 def _build_ctpp_video_msg(
@@ -390,9 +395,9 @@ def encode_video_config(
     callee: str,
     rtpc2_req_id: int,
     timestamp: int,
-    width: int = 800,
-    height: int = 480,
-    fps: int = 16,
+    width: int = VIDEO_WIDTH,
+    height: int = VIDEO_HEIGHT,
+    fps: int = VIDEO_FPS,
 ) -> bytes:
     """Encode video config trigger (4018 prefix, action 0x001A).
 
@@ -439,6 +444,117 @@ def encode_call_response_ack(
     buf += b"\xff\xff\xff\xff"
     buf += _null_terminated(caller)
     buf += callee.encode("ascii") + b"\x00\x00"
+    return bytes(buf)
+
+
+def encode_answer_video_reconfig(
+    caller: str,
+    apt_addr: str,
+    rtpc2_req_id: int,
+    timestamp: int,
+    width: int = VIDEO_WIDTH,
+    height: int = VIDEO_HEIGHT,
+    fps: int = VIDEO_FPS,
+) -> bytes:
+    """Encode answer sequence message 1: video config re-negotiate.
+
+    Identical to encode_video_config but callee is apt_addr (not entrance_addr).
+    PCAP-verified: prefix=0x1840, callee="SB000006" (apt_address without subaddress).
+    """
+    extra = bytearray()
+    extra += bytes([0x14, 0x32, 0x00, 0x00, 0x00, 0x00])
+    extra += struct.pack("<H", rtpc2_req_id)
+    extra += bytes([0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00])
+    extra += struct.pack("<H", width)
+    extra += struct.pack("<H", height)
+    extra += struct.pack("<H", 320)
+    extra += struct.pack("<H", 240)
+    extra += struct.pack("<H", fps)
+    extra += bytes([0x00, 0x00])
+    return _build_ctpp_video_msg(
+        prefix=0x1840,
+        timestamp=timestamp,
+        action=ACTION_VIDEO_CONFIG,
+        flags=0x0011,
+        caller=caller,
+        callee=apt_addr,
+        extra=bytes(extra),
+    )
+
+
+def encode_answer_peer(
+    caller: str,
+    entrance_addr: str,
+    timestamp: int,
+    renewal: bool = False,
+) -> bytes:
+    """Encode peer/accept message (action 0x70).
+
+    PCAP-verified wire format:
+      [prefix LE16] [timestamp LE32] [inner_len BE16] [0x0070 BE16]
+      [caller\\0] [flag 0x01 0x00] [0xFFFFFFFF]
+      [caller\\0] [entrance_addr\\0\\0]
+    inner_payload = caller (our full address e.g. "SB0000061") + \\0 + [flag, 0x00]
+
+    Initial call: prefix=0x1840, flag=0x01
+    Renewal:      prefix=0x1860, flag=0x00
+    """
+    prefix = 0x1860 if renewal else 0x1840
+    flag = b"\x00\x00" if renewal else b"\x01\x00"
+    inner_payload = caller.encode("ascii") + b"\x00" + flag
+    buf = bytearray()
+    buf += struct.pack("<H", prefix)
+    buf += struct.pack("<I", timestamp)
+    buf += struct.pack(">H", 2 + len(inner_payload))   # inner_len = action(2) + payload
+    buf += struct.pack(">H", ACTION_PEER)               # 0x0070
+    buf += inner_payload
+    buf += b"\xff\xff\xff\xff"
+    buf += _null_terminated(caller)
+    buf += entrance_addr.encode("ascii") + b"\x00\x00"
+    return bytes(buf)
+
+
+def encode_answer_config_ack(
+    caller: str,
+    entrance_addr: str,
+    timestamp: int,
+) -> bytes:
+    """Encode answer sequence message 2: supplemental config ACK (action 0x0e).
+
+    PCAP-verified wire format:
+      [0x1840 LE16] [timestamp LE32] [0x0002 BE16] [0x000E BE16]
+      [0x0000] [0xFFFFFFFF] [caller\\0] [entrance_addr\\0\\0]
+    """
+    buf = bytearray()
+    buf += struct.pack("<H", 0x1840)
+    buf += struct.pack("<I", timestamp)
+    buf += struct.pack(">H", 0x0002)               # inner_len = 2 (just the padding)
+    buf += struct.pack(">H", ACTION_CONFIG_ACK)    # 0x000E
+    buf += b"\x00\x00"                             # 2 bytes padding
+    buf += b"\xff\xff\xff\xff"
+    buf += _null_terminated(caller)
+    buf += entrance_addr.encode("ascii") + b"\x00\x00"
+    return bytes(buf)
+
+
+def encode_hangup(
+    caller: str,
+    entrance_addr: str,
+    timestamp: int,
+) -> bytes:
+    """Encode hangup message (action 0x2d).
+
+    Sent to terminate the call. Body includes the entrance address
+    (e.g. "SB100001").
+    """
+    buf = bytearray()
+    buf += struct.pack("<H", 0x1830)
+    buf += struct.pack("<I", timestamp)
+    buf += struct.pack(">H", ACTION_HANGUP)
+    buf += entrance_addr.encode("ascii") + b"\x00"
+    buf += b"\xff\xff\xff\xff"
+    buf += _null_terminated(caller)
+    buf += entrance_addr.encode("ascii") + b"\x00\x00"
     return bytes(buf)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
@@ -57,18 +58,16 @@ class ComelitDoorButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity
         self._door = door
         self._entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_door_{door.index}"
-        # Door names are device-provided strings, not static labels.
         self._attr_name = door.name
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device info linking this button to its door device."""
+        """Return device info linking this button to the main intercom device."""
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{self._entry_id}_door_{self._door.index}")},
+            identifiers={(DOMAIN, self._entry_id)},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name=self._door.name,
-            via_device=(DOMAIN, self._entry_id),
+            name="Comelit Intercom",
         )
 
     async def async_press(self) -> None:
@@ -111,11 +110,13 @@ class ComelitStartVideoButton(CoordinatorEntity[ComelitLocalCoordinator], Button
         """Start intercom video when pressed."""
         if not self.coordinator.device_config:
             return
+        t0 = time.monotonic()
         _LOGGER.info("Starting intercom video")
         try:
             await self.coordinator.async_start_video()
+            _LOGGER.info("Video ready in %.1fs", time.monotonic() - t0)
         except Exception:
-            _LOGGER.exception("Failed to start intercom video")
+            _LOGGER.exception("Failed to start intercom video after %.1fs", time.monotonic() - t0)
 
 
 class ComelitStopVideoButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity):
