@@ -112,6 +112,20 @@ class ComelitIntercomCamera(Camera):
         self._entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_intercom_camera"
         self._remove_push_cb: Callable[[], None] | None = None
+        self._remove_stop_video_cb: Callable[[], None] | None = None
+        self._remove_state_cb: Callable[[], None] | None = None
+
+    @property
+    def is_streaming(self) -> bool:
+        """Reflect whether a video session is currently active.
+
+        HA maps this to the entity state ("streaming" vs "idle"), which the
+        Lovelace card uses to decide between the live picture-entity and
+        the idle thumbnail.  Without a truthful is_streaming, picture-entity
+        locks onto the transport it picked at first stream_source() call —
+        MJPEG if the session wasn't ready yet — and never upgrades.
+        """
+        return self._coordinator.video_session is not None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -120,21 +134,24 @@ class ComelitIntercomCamera(Camera):
             identifiers={(DOMAIN, self._entry_id)},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name="Comelit Intercom",
+            name=self._coordinator.device_name,
         )
 
     async def stream_source(self) -> str | None:
         """Return the RTSP URL, waiting briefly if a session is starting.
 
-        If the user presses Start Video and opens the camera card
-        immediately, the CTPP handshake may still be in flight.
-        Rather than returning None (which makes HA fall back to JPEG
-        and never retry), wait up to 5s for the session to become
-        ready.  Returns None only if no session starts in time.
+        Gating on `_video_ready_event` prevents HA's stream worker and
+        go2rtc from connecting during the 2–3 s CTPP handshake window —
+        if they connect before video RTP flows, ffmpeg's demuxer errors
+        with "Stream ended; no additional packets" and HA backs off ~10 s
+        before retrying, which is the dominant delay in time-to-first-frame.
+
+        If a session is already active, return the URL immediately.
+        If one is in flight, wait up to 5 s for it.  Return None if
+        nothing is starting — HA falls back to JPEG polling in that case.
         """
         if self._coordinator.video_session is not None:
             return self._coordinator.rtsp_url
-        # Wait for an in-flight session to become ready
         try:
             await asyncio.wait_for(
                 self._coordinator._video_ready_event.wait(), timeout=5.0
@@ -155,30 +172,55 @@ class ComelitIntercomCamera(Camera):
     async def async_added_to_hass(self) -> None:
         """Register for push events when entity is added."""
         self._remove_push_cb = self._coordinator.add_push_callback(self._on_push)
+        self._remove_stop_video_cb = self._coordinator.add_stop_video_callback(
+            self._async_stop_ha_stream
+        )
+        self._remove_state_cb = self._coordinator.add_video_state_change_callback(
+            self._async_video_state_changed
+        )
 
     async def async_will_remove_from_hass(self) -> None:
-        """Unregister push callback when entity is removed."""
+        """Unregister callbacks when entity is removed."""
         if self._remove_push_cb:
             self._remove_push_cb()
             self._remove_push_cb = None
+        if self._remove_stop_video_cb:
+            self._remove_stop_video_cb()
+            self._remove_stop_video_cb = None
+        if self._remove_state_cb:
+            self._remove_state_cb()
+            self._remove_state_cb = None
         await self._coordinator.async_stop_video()
 
-    def _on_push(self, event: PushEvent) -> None:
-        """Auto-start video on doorbell ring event."""
-        if event.event_type == "doorbell_ring":
-            session = self._coordinator.video_session
-            if session and session.active:
-                _LOGGER.debug("Video already active, skipping doorbell auto-start")
-                return
-            _LOGGER.info("Doorbell ring detected — starting intercom video")
-            self.hass.async_create_task(self._start_video())
+    async def _async_video_state_changed(self) -> None:
+        """Push a fresh state to HA when video session starts or stops.
 
-    async def _start_video(self) -> None:
-        """Start a video call session."""
-        if not self._coordinator.device_config:
-            _LOGGER.warning("Cannot start video: device config not available")
+        Also re-runs provider discovery.  HA caches the WebRTC provider lookup
+        at entity-add time by calling `stream_source()` once — when the
+        session isn't active yet it returns None, so go2rtc is never attached
+        and `frontend_stream_types` only advertises HLS.  Refreshing here
+        lets go2rtc claim the camera on the first video session, which
+        upgrades the picture-entity card from HLS to WebRTC.
+        """
+        await self.async_refresh_providers()
+        self.async_write_ha_state()
+
+    async def _async_stop_ha_stream(self) -> None:
+        """Tear down HA's cached Stream so the worker thread exits cleanly.
+
+        Called from the coordinator before it forces any RTSP client
+        disconnect.  Clearing `self.stream` ensures HA re-invokes
+        `stream_source()` on the next Start, which properly waits on
+        `_video_ready_event`.
+        """
+        stream = self.stream
+        if stream is None:
             return
+        self.stream = None
         try:
-            await self._coordinator.async_start_video(auto_timeout=False)
+            await stream.stop()
         except Exception:
-            _LOGGER.exception("Failed to start intercom video")
+            _LOGGER.debug("Error stopping HA stream", exc_info=True)
+
+    def _on_push(self, event: PushEvent) -> None:
+        """Handle push events — no auto-start; user controls video via button or automation."""

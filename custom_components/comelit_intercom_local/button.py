@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -67,7 +68,7 @@ class ComelitDoorButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity
             identifiers={(DOMAIN, self._entry_id)},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name="Comelit Intercom",
+            name=self.coordinator.device_name,
         )
 
     async def async_press(self) -> None:
@@ -77,6 +78,19 @@ class ComelitDoorButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity
             await self.coordinator.async_open_door(self._door)
         except Exception:
             _LOGGER.exception("Failed to open door %s", self._door.name)
+            return
+
+        if self.coordinator.video_session and self.coordinator.video_session.active:
+            _LOGGER.info("Door opened — stopping video in 10s")
+            self.hass.async_create_task(self._stop_video_after_delay(10))
+
+    async def _stop_video_after_delay(self, delay: int) -> None:
+        """Stop the video session after a delay (seconds)."""
+        await asyncio.sleep(delay)
+        if self.coordinator.video_session and self.coordinator.video_session.active:
+            _LOGGER.info("Stopping video after door-open delay")
+            self.coordinator.request_video_stop()
+            await self.coordinator.async_stop_video()
 
 
 class ComelitStartVideoButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonEntity):
@@ -103,7 +117,7 @@ class ComelitStartVideoButton(CoordinatorEntity[ComelitLocalCoordinator], Button
             identifiers={(DOMAIN, self._entry_id)},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name="Comelit Intercom",
+            name=self.coordinator.device_name,
         )
 
     async def async_press(self) -> None:
@@ -143,7 +157,7 @@ class ComelitStopVideoButton(CoordinatorEntity[ComelitLocalCoordinator], ButtonE
             identifiers={(DOMAIN, self._entry_id)},
             manufacturer=MANUFACTURER,
             model=MODEL,
-            name="Comelit Intercom",
+            name=self.coordinator.device_name,
         )
 
     async def async_press(self) -> None:

@@ -82,7 +82,7 @@ async def test_camera_image_returns_frame_when_active(camera):
 
 @pytest.mark.asyncio
 async def test_stream_source_returns_url_when_session_active(camera):
-    """stream_source returns RTSP URL immediately when a session exists."""
+    """stream_source returns RTSP URL when a session exists."""
     camera._coordinator.video_session = MagicMock()
     camera._coordinator.rtsp_url = "rtsp://127.0.0.1:12345/intercom"
 
@@ -92,29 +92,27 @@ async def test_stream_source_returns_url_when_session_active(camera):
 
 @pytest.mark.asyncio
 async def test_stream_source_returns_none_when_no_session_and_timeout(camera):
-    """stream_source returns None when no session starts within the timeout."""
+    """stream_source returns None when no session is active and the ready event times out."""
     camera._coordinator.video_session = None
-    # Patch wait_for to immediately raise TimeoutError so the test doesn't
-    # actually sleep for the full 5s internal timeout.
-    with patch(
-        "custom_components.comelit_intercom_local.camera.asyncio.wait_for",
-        side_effect=TimeoutError,
-    ):
+    camera._coordinator.rtsp_url = "rtsp://127.0.0.1:12345/intercom"
+
+    # Patch wait_for as a real coroutine so the Event.wait() coroutine it
+    # receives is properly closed (avoids "was never awaited" RuntimeWarning).
+    async def _timeout(coro, timeout=None):
+        coro.close()
+        raise TimeoutError
+
+    with patch("custom_components.comelit_intercom_local.camera.asyncio.wait_for", _timeout):
         url = await camera.stream_source()
     assert url is None
 
 
 @pytest.mark.asyncio
-async def test_stream_source_returns_url_when_event_fires(camera):
-    """stream_source returns RTSP URL once _video_ready_event is set."""
+async def test_stream_source_returns_url_when_ready_event_fires(camera):
+    """stream_source returns the RTSP URL once _video_ready_event is set."""
     camera._coordinator.video_session = None
     camera._coordinator.rtsp_url = "rtsp://127.0.0.1:12345/intercom"
-
-    async def set_event_soon():
-        await asyncio.sleep(0.05)
-        camera._coordinator._video_ready_event.set()
-
-    asyncio.create_task(set_event_soon())
+    camera._coordinator._video_ready_event.set()
 
     url = await camera.stream_source()
     assert url == "rtsp://127.0.0.1:12345/intercom"
@@ -137,37 +135,12 @@ def test_on_push_skips_when_already_active(camera):
     camera.hass.async_create_task.assert_not_called()
 
 
-def test_on_push_starts_video_when_inactive(camera):
-    """_on_push starts video if no active session."""
+def test_on_push_does_not_auto_start_video(camera):
+    """_on_push no longer auto-starts video — user controls video via button or automation."""
     camera._coordinator.video_session = None
     camera.hass = MagicMock()
 
     event = PushEvent(event_type="doorbell_ring")
     camera._on_push(event)
 
-    camera.hass.async_create_task.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# _start_video
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_start_video_calls_coordinator(camera):
-    """_start_video calls coordinator.async_start_video with auto_timeout=False."""
-    camera._coordinator.async_start_video = AsyncMock()
-
-    await camera._start_video()
-
-    camera._coordinator.async_start_video.assert_called_once_with(auto_timeout=False)
-
-
-@pytest.mark.asyncio
-async def test_start_video_skips_when_no_config(camera):
-    """_start_video returns early if device_config is not available."""
-    camera._coordinator.device_config = None
-    camera._coordinator.async_start_video = AsyncMock()
-
-    await camera._start_video()
-
-    camera._coordinator.async_start_video.assert_not_called()
+    camera.hass.async_create_task.assert_not_called()
