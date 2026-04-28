@@ -1,8 +1,146 @@
-# Comelit Intercom Local
+# Comelit Intercom — Homebridge Plugin + Home Assistant Component
 
-Home Assistant custom component for the **Comelit 6701W** WiFi video intercom. Communicates via the ICONA Bridge TCP protocol — no cloud required.
+Local integration for the **Comelit 6701W** WiFi video intercom. Communicates entirely via the ICONA Bridge TCP protocol on port 64100 — no cloud required.
 
-## Features
+This repository contains two integrations built from the same protocol stack:
+
+| | Platform | Status |
+|---|---|---|
+| 🍎 | **Homebridge 2.0 plugin** | This branch — `homebridge-comelit-intercom` npm package |
+| 🏠 | **Home Assistant component** | `custom_components/comelit_intercom_local/` |
+
+---
+
+## Homebridge 2.0 Plugin
+
+### Features
+
+- **Door locks** — one `LockMechanism` accessory per door/gate relay; tap to open in the Home app
+- **Doorbell** — fires a HomeKit doorbell event on ring, triggering native iOS/macOS notifications
+- **RTSP cameras** — exposes any RTSP cameras reported by the device config
+- **100% local** — all TCP traffic stays on your LAN
+
+### Prerequisites
+
+- Node.js 18 or newer
+- Homebridge 2.0 (beta or stable)
+- Comelit 6701W accessible on your LAN
+- Your device's 32-character hex token (see [Finding your token](#finding-your-token))
+
+### Installation
+
+#### From npm (once published)
+
+```bash
+npm install -g homebridge-comelit-intercom
+```
+
+Then restart Homebridge and add the platform via the Homebridge UI.
+
+#### From source (this repo)
+
+```bash
+# Clone
+git clone https://github.com/Danimal4326/homebridge-comelit-intercom.git
+cd homebridge-comelit-intercom
+
+# Install dependencies and build
+npm install
+npm run build
+
+# Link into your global Homebridge installation
+npm link
+```
+
+Then restart Homebridge.
+
+### Finding your token
+
+1. Browse to `http://<device-ip>:8080` (default credentials: `admin` / `comelit`)
+2. Go to **Device Info** — copy the **ID32** field (32-character hex string)
+
+### Configuration
+
+Add a platform entry to your Homebridge `config.json`:
+
+```json
+{
+  "platforms": [
+    {
+      "platform": "ComelitIntercom",
+      "name": "Comelit Intercom",
+      "host": "192.168.1.100",
+      "token": "your32charhextoken...",
+      "port": 64100,
+      "enableNotifications": true,
+      "reconnectDelay": 10
+    }
+  ]
+}
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `platform` | ✅ | — | Must be `ComelitIntercom` |
+| `name` | ✅ | — | Display name shown in Homebridge UI |
+| `host` | ✅ | — | Device IP address or hostname |
+| `token` | ✅ | — | 32-char hex token from device admin page |
+| `port` | | `64100` | ICONA Bridge TCP port |
+| `enableNotifications` | | `true` | Open a persistent CTPP channel for doorbell ring events. Disable only for troubleshooting. |
+| `reconnectDelay` | | `10` | Seconds to wait before reconnecting after a drop |
+
+If you use the **Homebridge UI** (Config UI X), the plugin schema is in `config.schema.json` and all fields will appear as a form automatically.
+
+### Build
+
+```bash
+npm run build      # compile TypeScript → dist/
+npm run watch      # watch mode for development
+```
+
+Output lands in `dist/`. The plugin entry point is `dist/index.js`.
+
+### Accessories
+
+After Homebridge discovers the device, the following accessories appear in the Home app:
+
+| Accessory | HAP Service | Description |
+|-----------|-------------|-------------|
+| One per door/gate | `LockMechanism` | Tap **Open** to trigger the relay. Shows as "Unlocked" briefly then returns to "Locked" after 3 s. |
+| Doorbell | `Doorbell` + `Speaker` | Fires a ring event when someone presses the physical doorbell. Triggers a native HomeKit notification. |
+| RTSP cameras (if any) | `MotionSensor` (stub) | Cameras found in device config are registered. Full HomeKit streaming is a planned future addition. |
+
+### Usage
+
+**Opening a door**
+
+In the Home app, find the door accessory (e.g. *Actuator* or *Entrance Lock*) and tap **Open**. The lock icon briefly shows open, the relay fires, then it locks again automatically.
+
+You can also use Shortcuts or automations:
+
+```
+Siri: "Hey Siri, unlock Front Door"
+```
+
+**Doorbell notifications**
+
+When someone rings, your iPhone/iPad/Mac receives a HomeKit notification. No automation required — it works out of the box once the plugin is running.
+
+To also trigger a scene or other action when the bell rings, create a **HomeKit automation** in the Home app:
+- Trigger: *Doorbell detects doorbell*
+- Action: anything (turn on a light, unlock a different door, etc.)
+
+**Reconnection**
+
+The plugin reconnects automatically if the device goes to sleep or the network drops. The `reconnectDelay` setting controls how long it waits before trying again. A 90-second PUSH keepalive prevents false disconnects when the device is idle.
+
+---
+
+## Home Assistant Component
+
+> The HA component lives in `custom_components/comelit_intercom_local/`. The instructions below apply to that platform only.
+
+### Features
 
 - **Remote door opening** — open doors/gates from Home Assistant
 - **Live intercom video** — view the door camera stream directly in HA dashboards via local RTSP
@@ -10,26 +148,26 @@ Home Assistant custom component for the **Comelit 6701W** WiFi video intercom. C
 - **Custom Lovelace card** — play-button UI auto-registered on startup; starts video on click, stops on navigation away
 - **100% local** — all communication stays on your LAN, no cloud required
 
-## Requirements
+### Requirements
 
 - Comelit 6701W (or compatible ICONA Bridge device)
 - Device accessible on your local network
 - Home Assistant 2026.1+
 
-## Installation
+### Installation
 
-### HACS (Recommended)
+#### HACS (Recommended)
 
 1. Add this repository as a custom repository in HACS
 2. Install **Comelit Intercom Local**
 3. Restart Home Assistant
 
-### Manual
+#### Manual
 
 1. Copy the `custom_components/comelit_intercom_local/` folder to your HA `config/custom_components/` directory
 2. Restart Home Assistant
 
-## Configuration
+### Configuration
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **Comelit Intercom Local**
@@ -37,32 +175,29 @@ Home Assistant custom component for the **Comelit 6701W** WiFi video intercom. C
    - Your device password (token will be extracted automatically), or
    - A pre-extracted 32-character hex token
 
-### Notification settings
+#### Notification settings
 
-After setup, you can configure the integration via **Settings → Integrations → Comelit Intercom Local → Configure**:
+After setup, configure via **Settings → Integrations → Comelit Intercom Local → Configure**:
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | Enable notifications | On | Receive doorbell ring and door events. Disable if you only need video and door control, or to troubleshoot the notification connection. |
 
-Changing this setting reloads the integration automatically.
-
-## Entities
+### Entities
 
 | Entity | Description |
 |--------|-------------|
-| `button.comelit_intercom_<door_name>` | Press to open a door or gate (e.g., `button.comelit_intercom_actuator`) |
+| `button.comelit_intercom_<door_name>` | Press to open a door or gate |
 | `button.comelit_intercom_start_video_feed` | Manually start the intercom video call |
 | `button.comelit_intercom_stop_video_feed` | Stop the active video call |
 | `camera.comelit_intercom_live_feed` | Live video stream from the door panel via local RTSP |
-| `camera.comelit_intercom_<name>` | RTSP stream from each additional configured camera |
 | `event.comelit_intercom_doorbell` | Fires `doorbell_ring` and `missed_call` events for automations |
 
 ### Lovelace Cards
 
-Two custom cards are automatically registered on startup — both are optional.
+Two custom cards are automatically registered on startup.
 
-**Intercom camera card** — snapshot with play button overlay; click to start video, stops on navigation away:
+**Intercom camera card:**
 
 ```yaml
 type: custom:comelit-intercom-card
@@ -71,7 +206,7 @@ start_entity: button.comelit_intercom_start_video_feed  # optional
 stop_entity: button.comelit_intercom_stop_video_feed
 ```
 
-**Doorbell notification card** — shows a pulsing alert with Answer/Dismiss buttons when someone rings; auto-dismisses after `dismiss_after` seconds:
+**Doorbell notification card:**
 
 ```yaml
 type: custom:comelit-doorbell-card
@@ -82,22 +217,16 @@ stop_entity: button.comelit_intercom_stop_video_feed
 dismiss_after: 30  # optional, default 30s
 ```
 
-States: **Idle** (thumbnail + doorbell badge) → **Ringing** (pulsing icon + Answer/Dismiss) → **Answered** (live stream + stop button).
-
-### Doorbell Notifications
-
-When someone rings the doorbell, `event.comelit_intercom_doorbell` fires a `doorbell_ring` event. Video does **not** start automatically — you decide what happens via automations.
+### Doorbell Automations
 
 **Basic notification:**
 
 ```yaml
 alias: "Notify on doorbell ring"
-mode: single
 triggers:
   - platform: state
     entity_id: event.comelit_intercom_doorbell
     to: "doorbell_ring"
-conditions: []
 actions:
   - action: notify.mobile_app_your_phone
     data:
@@ -105,49 +234,7 @@ actions:
       message: "Someone is at the door!"
 ```
 
-**Notification with action button to open the camera view:**
-
-```yaml
-alias: "Doorbell ring with camera shortcut"
-mode: single
-triggers:
-  - platform: state
-    entity_id: event.comelit_intercom_doorbell
-    to: "doorbell_ring"
-conditions: []
-actions:
-  - action: notify.mobile_app_your_phone
-    data:
-      title: "Doorbell"
-      message: "Someone is at the door!"
-      data:
-        actions:
-          - action: URI
-            title: "Open Camera"
-            uri: /lovelace/intercom
-```
-
-**Auto-start video on ring (opt-in):**
-
-If you want the video to start automatically when the doorbell rings:
-
-```yaml
-alias: "Doorbell ring — notify and start video"
-mode: single
-triggers:
-  - platform: state
-    entity_id: event.comelit_intercom_doorbell
-    to: "doorbell_ring"
-conditions: []
-actions:
-  - action: notify.mobile_app_your_phone
-    data:
-      title: "Doorbell"
-      message: "Someone is at the door!"
-  - action: button.press
-    target:
-      entity_id: button.comelit_intercom_start_video_feed
-```
+---
 
 ## Protocol
 
@@ -158,52 +245,19 @@ The ICONA Bridge protocol runs over raw TCP on port 64100. Every message has an 
 ```
 
 Key operations:
-- **Authentication**: Open UAUT channel → send JSON access request with token → expect code 200
-- **Configuration**: Open UCFG channel → request config → parse doors, cameras, addresses
-- **VIP events**: Persistent CTPP channel — binary messages for doorbell ring, door opened, renewal ACK; replaces FCM-based PUSH for reliable local event delivery
-- **Door open (video active)**: Single `0x1840/0x000D` message on the existing video CTPP channel — PCAP-verified from Android app local traffic capture
-- **Door open (VIP listener active, no video)**: Reuse open CTPP, fire open+confirm directly — no init overhead (~30 ms)
-- **Door open (notifications disabled)**: Open transient CTPP channel → full init → 6-step binary sequence → close
-- **Push channel**: Registers FCM token; also used as a 90s keepalive probe — device ACKs with JSON, preventing false reconnect cycles
-
-## Changelog
-
-### 0.1.4
-
-> **⚠ Breaking change — entity IDs have changed**
->
-> Entity IDs are now derived from the integration's **title** instead of the hardcoded string `"Comelit Intercom"`.
-> If you added the integration before this version, your entity IDs may have changed (e.g. from
-> `button.comelit_intercom_actuator` to `button.comelit_192_168_1_111_actuator` if no custom name was set).
->
-> **Fix:** remove and re-add the integration, giving it a friendly name (e.g. `Front Door`) in the new Name field.
-> Entities will then be stable going forward (e.g. `button.front_door_actuator`).
-
-- **Custom integration name** — new optional "Name" field in the config flow sets the integration title and entity prefix; leave blank to use the host IP
-- **Options flow** — enable or disable doorbell notifications after setup via Settings → Integrations → Configure without removing and re-adding the integration
-- **Reliable doorbell detection** — replaced the FCM-based PUSH mechanism with a persistent CTPP channel listener (VIP events); actual call events are now received as binary messages on the device's local TCP channel, not via cloud FCM
-- **Doorbell notification card** — new `comelit-doorbell-card` auto-registered on startup; shows ring alert with Answer/Dismiss buttons and transitions to live stream when answered
-- **Door open during active video** — pressing a door button while video is active sends a single message on the existing CTPP channel (PCAP-verified Android app behaviour); no second TCP connection
-- **Faster door open** — when notifications are enabled, the CTPP channel is already open so door open skips the init handshake entirely (~30 ms vs ~2 s)
-- **Single shared TCP connection** — video signaling, VIP event listening, and door control share the coordinator's TCP connection; eliminates conflicts when the device only accepts one client at a time
-- **Door auto-stop** — pressing a door button while video is active automatically stops the video session 10 s later
-- **Faster time-to-first-frame** — RTSP `PLAY` response is gated until video RTP is flowing, preventing HA's stream worker from erroring on an empty stream; RTCP Sender Reports eliminate "no reference clock" delays in go2rtc, VLC, and browsers
-- **Accurate camera state** — `is_streaming` property reflects the active session so the Lovelace card transitions correctly and go2rtc attaches via WebRTC on the first video session
-- **TCP keepalive probe** — push-info re-sent every 90 s keeps the connection alive during idle periods; prevents false reconnect cycles when the device is reachable but quiet
-
-### 0.1.3
-- **Video renewal** — inline re-establishment on CALL_END (~30s) without TCP reconnect; video is uninterrupted
-- **Custom Lovelace card** — play-button UI auto-registered on HA startup; no manual resource configuration needed
-- **Concurrent session protection** — a second video start while one is in progress is immediately rejected, preventing CTPP negotiation conflicts
-- **TCP video fallback** — video works via TCP (RTPC2) when UDP is blocked by NAT/firewall
-- **Consistent entity naming** — all entities use the `comelit_intercom_` prefix (e.g., `button.comelit_intercom_actuator`, `camera.comelit_intercom_live_feed`)
+- **Auth**: Open UAUT channel → send JSON access request with token → expect code 200
+- **Config**: Open UCFG channel → request config → parse doors, cameras, addresses
+- **VIP events**: Persistent CTPP channel — binary messages for doorbell ring, door opened, renewal ACK
+- **Door open (fast path)**: Reuse open CTPP channel, fire open+confirm (~30 ms)
+- **Door open (standalone)**: Open transient CTPP → full init → binary sequence → close
+- **Keepalive**: push-info re-sent every 90 s; device ACKs with JSON, resetting the idle timer
 
 ## Acknowledgments
 
-Protocol knowledge derived from community reverse-engineering efforts:
-- [ha-component-comelit-intercom](https://github.com/nicolas-fricke/ha-component-comelit-intercom) by Nicolas Fricke
-- [comelit-client](https://github.com/madchicken/comelit-client) by Pierpaolo Follia
-- [Protocol analysis](https://grdw.nl/2023/01/28/my-intercom-part-1.html) by grdw
+Protocol knowledge derived from community reverse-engineering:
+- [ha-component-comelit-intercom](https://github.com/nicolas-fricke/ha-component-comelit-intercom) — Nicolas Fricke
+- [comelit-client](https://github.com/madchicken/comelit-client) — Pierpaolo Follia
+- [Protocol analysis](https://grdw.nl/2023/01/28/my-intercom-part-1.html) — grdw
 
 ## License
 
