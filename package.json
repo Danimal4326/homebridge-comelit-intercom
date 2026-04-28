@@ -3,6 +3,18 @@
   "version": "1.0.0",
   "description": "Homebridge plugin for Comelit 6701W WiFi video intercom — fully local, no cloud",
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Danimal4326/homebridge-comelit-intercom.git"
+  },
+  "homepage": "https://github.com/Danimal4326/homebridge-comelit-intercom#readme",
+  "bugs": {
+    "url": "https://github.com/Danimal4326/homebridge-comelit-intercom/issues"
+  },
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
