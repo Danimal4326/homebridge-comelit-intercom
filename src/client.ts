@@ -60,7 +60,7 @@ export class IconaBridgeClient extends EventEmitter {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection({ host: this.host, port: this.port });
+      const socket = net.createConnection({ host: this.host, port: this.port, allowHalfOpen: true });
 
       const timeout = setTimeout(() => {
         socket.destroy();

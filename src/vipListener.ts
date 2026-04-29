@@ -160,32 +160,33 @@ export class VipEventListener {
   }
 
   private async _sendEventAck(msg: CtppMessage): Promise<void> {
+    if (!this.running) return;
     const channel = this.channel;
     if (!channel) return;
     const vipAddress = `${this.config.aptAddress}${this.config.aptSubaddress}`;
     const entranceAddr = msg.addresses[0] ?? this.config.aptAddress;
-    // ACK timestamp: msg.timestamp + ACK_TS_INCREMENT (matches Python vip_listener.py)
     const ackTs = (msg.timestamp + ACK_TS_INCREMENT) & 0xffffffff;
     try {
       await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, entranceAddr, ackTs));
-    } catch {
-      this.log?.warn('VIP: failed to send event ACK');
+    } catch (e) {
+      this.log?.warn(`VIP: failed to send event ACK: ${(e as Error).message}`);
     }
   }
 
   private async _sendRenewalAck(msg: CtppMessage): Promise<void> {
+    if (!this.running) return;
     const channel = this.channel;
     if (!channel) return;
     const vipAddress = `${this.config.aptAddress}${this.config.aptSubaddress}`;
     const aptAddr = this.config.aptAddress;
-    // Renewal ACK timestamp: msg.timestamp + ACK_TS_INCREMENT (matches Python vip_listener.py)
     const ackTs = (msg.timestamp + ACK_TS_INCREMENT) & 0xffffffff;
+    this.log?.debug(`VIP: renewal ACK ts=0x${ackTs.toString(16)} caller=${vipAddress} callee=${aptAddr} msg-addrs=${msg.addresses.join(',')}`);
     try {
       await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, aptAddr, ackTs));
       await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, aptAddr, ackTs, 0x1820));
       this.log?.info('VIP: sent renewal ACK pair');
-    } catch {
-      this.log?.warn('VIP: failed to send renewal ACK');
+    } catch (e) {
+      this.log?.warn(`VIP: failed to send renewal ACK: ${(e as Error).message}`);
     }
   }
 
