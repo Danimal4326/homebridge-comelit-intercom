@@ -9,7 +9,6 @@ import { ComelitIntercomPlatform } from '../platform';
  */
 export class DoorbellAccessory {
   private readonly doorbellService: Service;
-  private readonly speakerService: Service;
 
   constructor(
     private readonly platform: ComelitIntercomPlatform,
@@ -23,24 +22,17 @@ export class DoorbellAccessory {
       .setCharacteristic(Characteristic.Model, '6701W')
       .setCharacteristic(Characteristic.SerialNumber, 'doorbell');
 
+    // Remove stale Speaker service if it was added in a previous version
+    const staleSpeaker = accessory.getService(Service.Speaker);
+    if (staleSpeaker) accessory.removeService(staleSpeaker);
+
     this.doorbellService =
       accessory.getService(Service.Doorbell) ||
       accessory.addService(Service.Doorbell, accessory.displayName);
 
-    // ProgrammableSwitchEvent is required by HAP for Doorbell — set read-only
     this.doorbellService
       .getCharacteristic(Characteristic.ProgrammableSwitchEvent)
       .onGet(() => null);
-
-    // Speaker service is required by HAP for video doorbell accessories
-    this.speakerService =
-      accessory.getService(Service.Speaker) ||
-      accessory.addService(Service.Speaker, 'Speaker');
-
-    this.speakerService
-      .getCharacteristic(Characteristic.Mute)
-      .onGet(() => false)
-      .onSet(() => { /* no-op */ });
   }
 
   /** Called by the platform when a doorbell_ring VIP event arrives. */
