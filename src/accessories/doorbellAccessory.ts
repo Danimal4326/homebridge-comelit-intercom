@@ -1,14 +1,12 @@
 import { PlatformAccessory, Service } from 'homebridge';
 import { ComelitIntercomPlatform } from '../platform';
 
-/**
- * DoorbellAccessory — fires a HAP Doorbell event when the intercom rings.
- *
- * Uses Service.Doorbell with ProgrammableSwitchEvent (SINGLE_PRESS = ring).
- * HomeKit sends a notification to all registered devices when triggered.
- */
+const RING_DURATION_MS = 5_000;
+
 export class DoorbellAccessory {
-  private readonly doorbellService: Service;
+  private readonly switchService: Service;
+  private active = false;
+  private offTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly platform: ComelitIntercomPlatform,
@@ -22,25 +20,40 @@ export class DoorbellAccessory {
       .setCharacteristic(Characteristic.Model, '6701W')
       .setCharacteristic(Characteristic.SerialNumber, 'doorbell');
 
-    // Remove stale Speaker service if it was added in a previous version
-    const staleSpeaker = accessory.getService(Service.Speaker);
-    if (staleSpeaker) accessory.removeService(staleSpeaker);
+    // Remove stale services from previous versions
+    for (const stale of [Service.Doorbell, Service.Speaker]) {
+      const svc = accessory.getService(stale);
+      if (svc) accessory.removeService(svc);
+    }
 
-    this.doorbellService =
-      accessory.getService(Service.Doorbell) ||
-      accessory.addService(Service.Doorbell, accessory.displayName);
+    this.switchService =
+      accessory.getService(Service.Switch) ||
+      accessory.addService(Service.Switch, accessory.displayName);
 
-    this.doorbellService
-      .getCharacteristic(Characteristic.ProgrammableSwitchEvent)
-      .onGet(() => null);
+    this.switchService
+      .getCharacteristic(Characteristic.On)
+      .onGet(() => this.active)
+      .onSet((value) => {
+        if (!value) this._setOff();
+      });
   }
 
   /** Called by the platform when a doorbell_ring VIP event arrives. */
   triggerRing(): void {
-    const { Characteristic } = this.platform;
-    this.platform.log.info('Doorbell ring → triggering HAP event');
-    this.doorbellService
-      .getCharacteristic(Characteristic.ProgrammableSwitchEvent)
-      .updateValue(Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS);
+    this.platform.log.info('Doorbell ring');
+    this.active = true;
+    this.switchService
+      .getCharacteristic(this.platform.Characteristic.On)
+      .updateValue(true);
+
+    clearTimeout(this.offTimer);
+    this.offTimer = setTimeout(() => this._setOff(), RING_DURATION_MS);
+  }
+
+  private _setOff(): void {
+    this.active = false;
+    this.switchService
+      .getCharacteristic(this.platform.Characteristic.On)
+      .updateValue(false);
   }
 }
