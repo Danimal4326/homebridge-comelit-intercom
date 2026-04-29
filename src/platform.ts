@@ -158,7 +158,12 @@ export class ComelitIntercomPlatform implements DynamicPlatformPlugin {
     await client.openChannel('CSPB', ChannelType.UAUT);
     const ts = (Date.now() / 1000) | 0;
     const ctpp = client.getChannel('CTPP')!;
-    await ctppInitSequence(client, ctpp, config.aptAddress, config.aptSubaddress, ourAddr, ts, 5_000, true, this.log);
+    // sendAck=false: do NOT send 0x1800+0x1820 after init.
+    // On this device those packets are interpreted as a call hang-up on an
+    // idle channel, causing the device to immediately close the connection.
+    // The VIP listener will ACK renewals and events using the correct
+    // per-message timestamp when they actually arrive.
+    await ctppInitSequence(client, ctpp, config.aptAddress, config.aptSubaddress, ourAddr, ts, 2_000, false, this.log);
   }
 
   private teardown(): void {
