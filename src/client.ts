@@ -60,7 +60,7 @@ export class IconaBridgeClient extends EventEmitter {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection({ host: this.host, port: this.port, allowHalfOpen: true });
+      const socket = net.createConnection({ host: this.host, port: this.port });
 
       const timeout = setTimeout(() => {
         socket.destroy();
@@ -159,6 +159,10 @@ export class IconaBridgeClient extends EventEmitter {
     }
     for (const cb of this.pendingCallbacks.values()) cb(Buffer.alloc(0));
     this.pendingCallbacks.clear();
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = null;
+    }
     if (this.disconnectCallback) this.disconnectCallback();
   }
 

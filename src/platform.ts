@@ -134,6 +134,12 @@ export class ComelitIntercomPlatform implements DynamicPlatformPlugin {
       }
     }
 
+    if (!client.connected) {
+      // Device closed the connection during CTPP setup; onClientDisconnect already
+      // scheduled the reconnect — just bail so we don't report "ready" on a dead link.
+      return;
+    }
+
     if (enableNotifications && client.getChannel('CTPP')) {
       const listener = new VipEventListener(client, deviceConfig, (ev) => this.onPushEvent(ev), this.log);
       this.vipListener = listener;
