@@ -118,23 +118,24 @@ export class ComelitIntercomPlatform implements DynamicPlatformPlugin {
       this.log.warn(`Push registration failed (non-fatal): ${(e as Error).message}`);
     }
 
-    let ctppInitTs = 0;
+    // Set up client and disconnect callback before CTPP init so that if the
+    // device closes during the handshake, onClientDisconnect fires and the
+    // reconnect loop is properly triggered.
+    this.client = client;
+    this.config_ = deviceConfig;
+    client.setDisconnectCallback(() => this.onClientDisconnect());
+
     if (enableNotifications) {
       try {
-        ctppInitTs = await this.openCtppChannels(client, deviceConfig);
+        await this.openCtppChannels(client, deviceConfig);
         this.log.info('CTPP channels open for VIP events');
       } catch (e) {
         this.log.warn(`CTPP setup failed (notifications disabled): ${(e as Error).message}`);
       }
     }
 
-    this.client = client;
-    this.config_ = deviceConfig;
-
-    client.setDisconnectCallback(() => this.onClientDisconnect());
-
-    if (enableNotifications && ctppInitTs > 0) {
-      const listener = new VipEventListener(client, deviceConfig, (ev) => this.onPushEvent(ev), ctppInitTs, this.log);
+    if (enableNotifications && client.getChannel('CTPP')) {
+      const listener = new VipEventListener(client, deviceConfig, (ev) => this.onPushEvent(ev), this.log);
       this.vipListener = listener;
       await listener.start().catch((e) =>
         this.log.warn(`VIP listener start failed: ${(e as Error).message}`),
@@ -150,15 +151,14 @@ export class ComelitIntercomPlatform implements DynamicPlatformPlugin {
   private async openCtppChannels(
     client: IconaBridgeClient,
     config: DeviceConfig,
-  ): Promise<number> {
+  ): Promise<void> {
     const ourAddr = `${config.aptAddress}${config.aptSubaddress}`;
     // VIP CTPP uses ChannelType.UAUT (7) — faithful to coordinator.py
     await client.openChannel('CTPP', ChannelType.UAUT, ourAddr);
     await client.openChannel('CSPB', ChannelType.UAUT);
     const ts = (Date.now() / 1000) | 0;
     const ctpp = client.getChannel('CTPP')!;
-    await ctppInitSequence(client, ctpp, config.aptAddress, config.aptSubaddress, ourAddr, ts);
-    return ts;
+    await ctppInitSequence(client, ctpp, config.aptAddress, config.aptSubaddress, ourAddr, ts, 5_000, true, this.log);
   }
 
   private teardown(): void {

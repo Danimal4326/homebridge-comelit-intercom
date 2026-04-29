@@ -71,6 +71,7 @@ export class IconaBridgeClient extends EventEmitter {
         clearTimeout(timeout);
         this.socket = socket;
         this._connected = true;
+        socket.setMaxListeners(0); // prevent accumulation across reconnect cycles
         socket.setKeepAlive(true, 60_000);
         socket.on('data', (chunk: Buffer) => this._onData(chunk));
         socket.on('end', () => this._onDisconnect('EOF'));

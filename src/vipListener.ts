@@ -8,7 +8,6 @@
 
 import { ChannelState } from './channels';
 import { IconaBridgeClient } from './client';
-import { CTR_INCR_BOTH } from './ctpp';
 import { DeviceConfig, PushEvent } from './models';
 import { encodeCallResponseAck } from './protocol';
 
@@ -21,7 +20,9 @@ const PREFIX_CALL_INIT = 0x18c0;
 const ACTION_IN_ALERTING = 0x0001;
 const ACTION_DOOR_OPENED = 0x0003;
 const ACTION_REGISTRATION_RENEWAL = 0x0010;
-const ACTION_CALL_TERMINATED = 0x000a;
+
+// Event ACK: only ONE counter increments (matches Python vip_listener.py)
+const ACK_TS_INCREMENT = 0x01000000;
 
 const MIN_MSG_SIZE = 8;
 const DEDUP_WINDOW_MS = 10_000;
@@ -44,16 +45,23 @@ function parseCtppMessage(data: Buffer): CtppMessage | null {
   const msg: CtppMessage = { prefix, timestamp, action, addresses: [], raw: data };
   if (data.length >= 10) msg.flags = data.readUInt16BE(8);
 
+  // Extract addresses: null-terminated ASCII strings that follow the 0xFFFFFFFF marker.
+  // This approach works for both "SB"-prefixed addresses and all-numeric addresses.
   const addresses: string[] = [];
-  let i = 0;
-  while (i < data.length - 1) {
-    if (data[i] === 0x53 && data[i + 1] === 0x42) { // 'SB'
+  let markerIdx = -1;
+  for (let i = 0; i <= data.length - 4; i++) {
+    if (data[i] === 0xff && data[i + 1] === 0xff && data[i + 2] === 0xff && data[i + 3] === 0xff) {
+      markerIdx = i;
+      break;
+    }
+  }
+  if (markerIdx >= 0) {
+    let i = markerIdx + 4;
+    while (i < data.length) {
       const nullIdx = data.indexOf(0, i);
-      const end = nullIdx >= 0 ? nullIdx : data.length;
-      addresses.push(data.subarray(i, end).toString('ascii'));
-      i = end + 1;
-    } else {
-      i++;
+      if (nullIdx < 0 || nullIdx === i) break;
+      addresses.push(data.subarray(i, nullIdx).toString('ascii'));
+      i = nullIdx + 1;
     }
   }
   msg.addresses = addresses;
@@ -64,8 +72,6 @@ export class VipEventListener {
   private channel?: ChannelState;
   private running = false;
   private loopPromise?: Promise<void>;
-  private loopReject?: (err: Error) => void;
-  private readonly ackTs: number;
   private lastFired = new Map<string, number>();
   private lastSeenTs = new Map<string, [number, number]>(); // key → [ts, wallTime]
 
@@ -73,23 +79,21 @@ export class VipEventListener {
     private readonly client: IconaBridgeClient,
     private readonly config: DeviceConfig,
     private readonly callback: (event: PushEvent) => void,
-    private readonly initTs: number,
     private readonly log?: { debug: (m: string, ...a: unknown[]) => void; info: (m: string, ...a: unknown[]) => void; warn: (m: string, ...a: unknown[]) => void },
-  ) {
-    this.ackTs = (initTs + CTR_INCR_BOTH) & 0xffffffff;
-  }
+  ) {}
 
   async start(): Promise<void> {
     const ctpp = this.client.getChannel('CTPP');
     if (!ctpp) throw new Error('CTPP channel not open');
     this.channel = ctpp;
     this.running = true;
-    this.loopPromise = this._listenLoop();
+    this.loopPromise = this._listenLoop().catch((e) =>
+      this.log?.warn(`VIP listener loop exited: ${(e as Error).message}`),
+    );
   }
 
   async stop(): Promise<void> {
     this.running = false;
-    if (this.loopReject) this.loopReject(new Error('stopped'));
     this.channel?.responseQueue.clear();
     if (this.loopPromise) {
       await this.loopPromise.catch(() => undefined);
@@ -114,65 +118,71 @@ export class VipEventListener {
     const msg = parseCtppMessage(data);
     if (!msg) return;
 
-    const { prefix, action, addresses } = msg;
+    const { prefix, action } = msg;
     const now = Date.now();
     const key = `${prefix}:${action}`;
     const last = this.lastSeenTs.get(key);
     const isRetransmit = last !== undefined && last[0] === msg.timestamp && now - last[1] < 10_000;
     this.lastSeenTs.set(key, [msg.timestamp, now]);
 
+    this.log?.debug(`VIP msg: prefix=0x${prefix.toString(16).padStart(4, '0')} action=0x${action.toString(16).padStart(4, '0')} ts=0x${msg.timestamp.toString(16)} addrs=${msg.addresses.join(',')}`);
+
+    // Periodic registration renewal — ACK with 0x1800+0x1820 pair
     if (prefix === PREFIX_VIP_EVENT && action === ACTION_REGISTRATION_RENEWAL) {
-      await this._sendRenewalAck();
+      await this._sendRenewalAck(msg);
       return;
     }
 
+    // ACK call-init (0x18C0) messages
     if (prefix === PREFIX_CALL_INIT) {
-      await this._sendEventAck(addresses);
+      await this._sendEventAck(msg);
     }
 
-    if (
-      prefix === PREFIX_VIDEO_EVENT ||
-      (prefix === PREFIX_VIP_EVENT && !(prefix === PREFIX_VIP_EVENT && action === ACTION_DOOR_OPENED))
-    ) {
-      await this._sendEventAck(addresses);
+    // ACK all 0x1840 and 0x1860 events (matches Python vip_listener.py)
+    if (prefix === PREFIX_VIDEO_EVENT || prefix === PREFIX_VIP_EVENT) {
+      await this._sendEventAck(msg);
     }
 
     if (isRetransmit && prefix === PREFIX_VIDEO_EVENT) return;
 
     if (prefix === PREFIX_CALL_INIT) {
-      this._fireEvent('doorbell_ring', addresses);
+      this._fireEvent('doorbell_ring', msg.addresses);
       return;
     }
 
     if (prefix === PREFIX_VIP_EVENT && action !== 0) {
       if (action === ACTION_IN_ALERTING) {
-        this._fireEvent('doorbell_ring', addresses);
+        this._fireEvent('doorbell_ring', msg.addresses);
       } else if (action === ACTION_DOOR_OPENED) {
-        this._fireEvent('door_opened', addresses);
+        this._fireEvent('door_opened', msg.addresses);
       }
     }
   }
 
-  private async _sendEventAck(addresses: string[]): Promise<void> {
+  private async _sendEventAck(msg: CtppMessage): Promise<void> {
     const channel = this.channel;
     if (!channel) return;
     const vipAddress = `${this.config.aptAddress}${this.config.aptSubaddress}`;
-    const entranceAddr = addresses[0] ?? this.config.aptAddress;
+    const entranceAddr = msg.addresses[0] ?? this.config.aptAddress;
+    // ACK timestamp: msg.timestamp + ACK_TS_INCREMENT (matches Python vip_listener.py)
+    const ackTs = (msg.timestamp + ACK_TS_INCREMENT) & 0xffffffff;
     try {
-      await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, entranceAddr, this.ackTs));
+      await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, entranceAddr, ackTs));
     } catch {
       this.log?.warn('VIP: failed to send event ACK');
     }
   }
 
-  private async _sendRenewalAck(): Promise<void> {
+  private async _sendRenewalAck(msg: CtppMessage): Promise<void> {
     const channel = this.channel;
     if (!channel) return;
     const vipAddress = `${this.config.aptAddress}${this.config.aptSubaddress}`;
     const aptAddr = this.config.aptAddress;
+    // Renewal ACK timestamp: msg.timestamp + ACK_TS_INCREMENT (matches Python vip_listener.py)
+    const ackTs = (msg.timestamp + ACK_TS_INCREMENT) & 0xffffffff;
     try {
-      await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, aptAddr, this.ackTs));
-      await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, aptAddr, this.ackTs, 0x1820));
+      await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, aptAddr, ackTs));
+      await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, aptAddr, ackTs, 0x1820));
       this.log?.info('VIP: sent renewal ACK pair');
     } catch {
       this.log?.warn('VIP: failed to send renewal ACK');
