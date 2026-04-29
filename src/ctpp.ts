@@ -24,7 +24,7 @@ export async function ctppInitSequence(
   await readResponseCtpp(client, channel, responseTimeoutMs, log);
 
   if (sendAck) {
-    const ackTs = (timestamp + CTR_INCR_BOTH) & 0xffffffff;
+    const ackTs = (timestamp + CTR_INCR_BOTH) >>> 0;
     log?.debug(`CTPP init: sending ACK pair ackTs=0x${ackTs.toString(16)} caller=${ourAddr} callee=${aptAddr}`);
     await client.sendBinary(channel, encodeCallResponseAck(ourAddr, aptAddr, ackTs));
     await client.sendBinary(channel, encodeCallResponseAck(ourAddr, aptAddr, ackTs, 0x1820));

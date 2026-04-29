@@ -165,7 +165,7 @@ export class VipEventListener {
     if (!channel) return;
     const vipAddress = `${this.config.aptAddress}${this.config.aptSubaddress}`;
     const entranceAddr = msg.addresses[0] ?? this.config.aptAddress;
-    const ackTs = (msg.timestamp + ACK_TS_INCREMENT) & 0xffffffff;
+    const ackTs = (msg.timestamp + ACK_TS_INCREMENT) >>> 0;
     try {
       await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, entranceAddr, ackTs));
     } catch (e) {
@@ -179,7 +179,7 @@ export class VipEventListener {
     if (!channel) return;
     const vipAddress = `${this.config.aptAddress}${this.config.aptSubaddress}`;
     const aptAddr = this.config.aptAddress;
-    const ackTs = (msg.timestamp + ACK_TS_INCREMENT) & 0xffffffff;
+    const ackTs = (msg.timestamp + ACK_TS_INCREMENT) >>> 0;
     this.log?.debug(`VIP: renewal ACK ts=0x${ackTs.toString(16)} caller=${vipAddress} callee=${aptAddr} msg-addrs=${msg.addresses.join(',')}`);
     try {
       await this.client.sendBinary(channel, encodeCallResponseAck(vipAddress, aptAddr, ackTs));
