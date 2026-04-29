@@ -129,7 +129,6 @@ export class VipEventListener {
 
     // Periodic registration renewal — ACK with 0x1800+0x1820 pair
     if (prefix === PREFIX_VIP_EVENT && action === ACTION_REGISTRATION_RENEWAL) {
-      this.log?.info(`VIP: renewal hex=${data.subarray(0, Math.min(data.length, 48)).toString('hex')}`);
       await this._sendRenewalAck(msg);
       return;
     }

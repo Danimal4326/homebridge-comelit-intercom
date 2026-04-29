@@ -7,7 +7,7 @@ const CTPP_RESPONSE_MIN_LEN = 8;
 const PREFIX_VIP_EVENT = 0x1860;
 const ACK_TS_INCREMENT = 0x01000000;
 
-type Logger = { debug: (m: string, ...a: unknown[]) => void; info: (m: string, ...a: unknown[]) => void };
+type Logger = { debug: (m: string, ...a: unknown[]) => void; warn: (m: string, ...a: unknown[]) => void };
 
 export async function ctppInitSequence(
   client: IconaBridgeClient,
@@ -23,7 +23,7 @@ export async function ctppInitSequence(
   log?.debug(`CTPP init: sending init ts=0x${timestamp.toString(16)} addr=${ourAddr}`);
   await client.sendBinary(channel, encodeCttpInit(aptAddr, aptSub, timestamp));
 
-  await readResponseCtpp(client, channel, responseTimeoutMs, log, { aptAddr, aptSub, ourAddr });
+  await readResponseCtpp(client, channel, responseTimeoutMs, log, { aptAddr, ourAddr });
 
   if (sendAck) {
     const ackTs = (timestamp + CTR_INCR_BOTH) >>> 0;
@@ -39,7 +39,7 @@ export async function readResponseCtpp(
   channel: ChannelState,
   responseTimeoutMs = 5_000,
   log?: Logger,
-  ackConfig?: { aptAddr: string; aptSub: number; ourAddr: string },
+  ackConfig?: { aptAddr: string; ourAddr: string },
 ): Promise<void> {
   // Read up to two responses from the device after the CTPP init. The device
   // typically sends [0x1800 init ACK][0x1860 initial-burst renewal] in quick
@@ -52,23 +52,22 @@ export async function readResponseCtpp(
     const resp = await client.readResponse(channel, responseTimeoutMs);
     if (resp && resp.length >= CTPP_RESPONSE_MIN_LEN) {
       const prefix = resp.readUInt16LE(0);
-      log?.info(`CTPP init response ${i + 1}: ${resp.length} bytes prefix=0x${prefix.toString(16).padStart(4, '0')} hex=${resp.subarray(0, Math.min(resp.length, 32)).toString('hex')}`);
+      log?.debug(`CTPP init response ${i + 1}: ${resp.length} bytes prefix=0x${prefix.toString(16).padStart(4, '0')}`);
 
       if (prefix === PREFIX_VIP_EVENT && ackConfig) {
-        const { aptAddr, aptSub, ourAddr } = ackConfig;
-        const vipAddr = ourAddr; // aptAddr + aptSub, already concatenated by caller
+        const { aptAddr, ourAddr } = ackConfig;
         const msgTs = resp.readUInt32LE(2);
         const ackTs = (msgTs + ACK_TS_INCREMENT) >>> 0;
-        log?.info(`CTPP init: sending fast renewal ACK ts=0x${ackTs.toString(16)}`);
+        log?.debug(`CTPP init: sending fast renewal ACK ts=0x${ackTs.toString(16)}`);
         try {
-          await client.sendBinary(channel, encodeCallResponseAck(vipAddr, aptAddr, ackTs));
-          await client.sendBinary(channel, encodeCallResponseAck(vipAddr, aptAddr, ackTs, 0x1820));
+          await client.sendBinary(channel, encodeCallResponseAck(ourAddr, aptAddr, ackTs));
+          await client.sendBinary(channel, encodeCallResponseAck(ourAddr, aptAddr, ackTs, 0x1820));
         } catch {
-          log?.info('CTPP init: fast renewal ACK failed (connection closing)');
+          log?.warn('CTPP init: fast renewal ACK failed (connection closing)');
         }
       }
     } else {
-      log?.info(`CTPP init response ${i + 1}: timeout (no data)`);
+      log?.debug(`CTPP init response ${i + 1}: timeout (no data)`);
     }
   }
 }
